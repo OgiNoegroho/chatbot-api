@@ -3,6 +3,7 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { v4 as uuidv4 } from "uuid";
 import { pool } from "../config/database";
+import type { TrainingDocument } from "../types/training";
 
 export class WebScraperService {
   private readonly maxChunkSize = 1000; // characters per chunk

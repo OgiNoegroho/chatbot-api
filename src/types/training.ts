@@ -1,5 +1,5 @@
 // src/types/training.ts
-interface TrainingDocument {
+export interface TrainingDocument {
   id: string;
   source: string;
   content: string;

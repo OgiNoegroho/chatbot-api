@@ -6,8 +6,15 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import { ChatService } from "./services/chat";
 import { PerformanceMonitor } from "./services/performance";
+import trainingRoutes from "./routes/training.routes";
 
 const app = express();
+// Add JSON body parser
+app.use(express.json());
+
+// Register training routes
+app.use("/training", trainingRoutes);
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
@@ -78,3 +85,4 @@ const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+

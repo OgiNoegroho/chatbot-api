@@ -1,86 +1,81 @@
-// src/services/pdfprocessor.ts
-
-import fs from "fs/promises";
+// src/services/langchain-pdf-processor.ts
+import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
+import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { v4 as uuidv4 } from "uuid";
 import { pool } from "../config/database";
 import type { TrainingDocument } from "../types/training";
+import fs from "fs/promises";
 import path from "path";
-import * as pdfjs from "pdfjs-dist";
 
-// IMPORTANT: Update the worker configuration
-if (typeof window === "undefined") {
-  // Node.js environment
-  const pdfjsWorker = require("pdfjs-dist/build/pdf.worker.js");
-  if (!(globalThis as any).pdfjsWorker) {
-    (globalThis as any).pdfjsWorker = pdfjsWorker;
-  }
-} else {
-  // Browser environment
-  pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
-}
-
-interface PDFProcessorConfig {
-  maxChunkSize: number;
-  minChunkSize?: number;
+interface LangChainPDFProcessorConfig {
+  chunkSize?: number;
+  chunkOverlap?: number;
   enableLogging?: boolean;
 }
 
-export class PDFProcessorService {
-  private readonly config: PDFProcessorConfig;
-  private readonly logger: (
-    message: string,
-    level?: "info" | "warn" | "error"
-  ) => void;
+export class LangChainPDFProcessor {
+  private readonly config: Required<LangChainPDFProcessorConfig>;
+  private readonly textSplitter: RecursiveCharacterTextSplitter;
 
-  constructor(config: PDFProcessorConfig) {
+  constructor(config?: LangChainPDFProcessorConfig) {
     this.config = {
-      maxChunkSize: config.maxChunkSize,
-      minChunkSize: config.minChunkSize || 100,
-      enableLogging: config.enableLogging ?? true,
+      chunkSize: config?.chunkSize ?? 1000,
+      chunkOverlap: config?.chunkOverlap ?? 200,
+      enableLogging: config?.enableLogging ?? true,
     };
 
-    this.logger = (
-      message: string,
-      level: "info" | "warn" | "error" = "info"
-    ) => {
-      if (this.config.enableLogging) {
-        switch (level) {
-          case "warn":
-            console.warn(message);
-            break;
-          case "error":
-            console.error(message);
-            break;
-          default:
-            console.log(message);
-        }
+    this.textSplitter = new RecursiveCharacterTextSplitter({
+      chunkSize: this.config.chunkSize,
+      chunkOverlap: this.config.chunkOverlap,
+    });
+  }
+
+  private log(
+    message: string,
+    level: "info" | "warn" | "error" = "info"
+  ): void {
+    if (this.config.enableLogging) {
+      switch (level) {
+        case "error":
+          console.error(message);
+          break;
+        case "warn":
+          console.warn(message);
+          break;
+        default:
+          console.log(message);
       }
-    };
+    }
   }
 
   async processPDF(filePath: string): Promise<TrainingDocument> {
     try {
-      this.logger(`Starting PDF processing for file: ${filePath}`);
+      this.log(`Starting PDF processing for file: ${filePath}`);
       await this.validateFile(filePath);
 
-      const pdfBytes = await fs.readFile(filePath);
-      const fileName = path.basename(filePath);
-      const content = await this.extractTextFromPDF(pdfBytes);
+      const loader = new PDFLoader(filePath, {
+        splitPages: false,
+      });
+      const docs = await loader.load();
 
-      if (!content) {
-        throw new Error("No text content extracted from PDF");
+      if (!docs.length) {
+        throw new Error("No content extracted from PDF");
       }
+
+      const fullContent = docs[0].pageContent;
+      const chunks = await this.textSplitter.splitText(fullContent);
 
       const document: TrainingDocument = {
         id: uuidv4(),
         source: filePath,
-        content,
+        content: fullContent,
         metadata: {
-          title: fileName,
+          title: path.basename(filePath),
           fileType: "pdf",
           date: new Date(),
+          ...docs[0].metadata,
         },
-        chunks: this.chunkContent(content),
+        chunks,
         created_at: new Date(),
       };
 
@@ -95,100 +90,12 @@ export class PDFProcessorService {
   private async validateFile(filePath: string): Promise<void> {
     try {
       await fs.access(filePath);
-      this.logger("File exists and is accessible");
+      this.log("File exists and is accessible");
     } catch {
       throw new Error(
         `PDF file does not exist or is not accessible at path: ${filePath}`
       );
     }
-  }
-
-  private async extractTextFromPDF(pdfBuffer: Buffer): Promise<string> {
-    try {
-      const pdfData = new Uint8Array(pdfBuffer);
-      const loadingTask = pdfjs.getDocument({
-        data: pdfData,
-        useWorkerFetch: false,
-        isEvalSupported: false,
-        disableFontFace: true,
-      });
-
-      const pdf = await loadingTask.promise;
-      this.logger(`PDF loaded successfully. Number of pages: ${pdf.numPages}`);
-
-      const pageTexts = await Promise.all(
-        Array.from({ length: pdf.numPages }, (_, i) =>
-          this.extractPageText(pdf, i + 1)
-        )
-      );
-
-      return pageTexts.join(" ").replace(/\s+/g, " ").trim();
-    } catch (error) {
-      this.logger(`Error in extractTextFromPDF: ${error}`, "error");
-      throw error;
-    }
-  }
-
-  private async extractPageText(pdf: any, pageNum: number): Promise<string> {
-    try {
-      const page = await pdf.getPage(pageNum);
-      const textContent = await page.getTextContent();
-
-      return textContent.items
-        .map((item: any) => ("str" in item ? item.str : ""))
-        .join(" ");
-    } catch (error) {
-      this.logger(
-        `Error extracting text from page ${pageNum}: ${error}`,
-        "error"
-      );
-      return "";
-    }
-  }
-
-  private chunkContent(content: string): string[] {
-    if (!content?.trim()) {
-      return [];
-    }
-
-    const chunks: string[] = [];
-    const sentences = content.match(/[^.!?]+[.!?]+/g) || [];
-
-    if (sentences.length === 0) {
-      return this.createFixedSizeChunks(content);
-    }
-
-    let currentChunk = "";
-
-    for (const sentence of sentences) {
-      if ((currentChunk + sentence).length <= this.config.maxChunkSize) {
-        currentChunk += sentence;
-      } else {
-        if (currentChunk.length >= this.config.minChunkSize!) {
-          chunks.push(currentChunk.trim());
-        }
-        currentChunk = sentence;
-      }
-    }
-
-    if (currentChunk.length >= this.config.minChunkSize!) {
-      chunks.push(currentChunk.trim());
-    }
-
-    return chunks;
-  }
-
-  private createFixedSizeChunks(content: string): string[] {
-    return Array.from(
-      { length: Math.ceil(content.length / this.config.maxChunkSize) },
-      (_, i) =>
-        content
-          .substring(
-            i * this.config.maxChunkSize,
-            (i + 1) * this.config.maxChunkSize
-          )
-          .trim()
-    );
   }
 
   private async saveDocument(document: TrainingDocument): Promise<void> {
@@ -206,9 +113,48 @@ export class PDFProcessorService {
           document.created_at,
         ]
       );
-      this.logger(`Successfully saved document ${document.id} to database`);
+      this.log(`Successfully saved document ${document.id} to database`);
     } catch (error) {
       throw new Error(`Failed to save document to database: ${error}`);
+    }
+  }
+
+  async processPDFs(filePaths: string[]): Promise<TrainingDocument[]> {
+    this.log(`Starting to process ${filePaths.length} PDFs`);
+
+    const results: TrainingDocument[] = [];
+    const errors: { path: string; error: string }[] = [];
+
+    for (const filePath of filePaths) {
+      try {
+        const document = await this.processPDF(filePath);
+        results.push(document);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({ path: filePath, error: message });
+        this.log(`Failed to process ${filePath}: ${message}`, "error");
+      }
+    }
+
+    this.logProcessingResults(results.length, errors);
+    return results;
+  }
+
+  private logProcessingResults(
+    successCount: number,
+    errors: { path: string; error: string }[]
+  ): void {
+    this.log(
+      `Processing completed:
+      - Successful: ${successCount}
+      - Failed: ${errors.length}
+      ${errors.length > 0 ? "\nFailed files:" : ""}`
+    );
+
+    if (errors.length > 0) {
+      errors.forEach(({ path, error }) =>
+        this.log(`- ${path}: ${error}`, "error")
+      );
     }
   }
 }

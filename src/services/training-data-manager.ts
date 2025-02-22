@@ -1,7 +1,6 @@
 // src/services/training-data-manager.ts
-
 import { pool } from "../config/database";
-import { PDFProcessorService } from "./pdfprocessor";
+import { LangChainPDFProcessor } from "./pdfprocessor";
 import { WebScraperService } from "./webscraper";
 import type { TrainingDocument } from "../types/training";
 
@@ -16,12 +15,14 @@ interface TrainingDataManagerConfig {
   concurrentProcessing?: number;
   enableLogging?: boolean;
   retryAttempts?: number;
-  retryDelay?: number; // milliseconds
+  retryDelay?: number;
+  pdfChunkSize?: number;
+  pdfChunkOverlap?: number;
 }
 
 export class TrainingDataManager {
   private readonly webScraper: WebScraperService;
-  private readonly pdfProcessor: PDFProcessorService;
+  private readonly pdfProcessor: LangChainPDFProcessor;
   private readonly config: Required<TrainingDataManagerConfig>;
 
   constructor(config?: TrainingDataManagerConfig) {
@@ -30,11 +31,17 @@ export class TrainingDataManager {
       enableLogging: config?.enableLogging ?? true,
       retryAttempts: config?.retryAttempts ?? 2,
       retryDelay: config?.retryDelay ?? 1000,
+      pdfChunkSize: config?.pdfChunkSize ?? 1000,
+      pdfChunkOverlap: config?.pdfChunkOverlap ?? 200,
     };
 
-    this.webScraper = new WebScraperService();
-    this.pdfProcessor = new PDFProcessorService({
-      maxChunkSize: 1000,
+    this.webScraper = new WebScraperService({
+      enableLogging: this.config.enableLogging,
+    });
+
+    this.pdfProcessor = new LangChainPDFProcessor({
+      chunkSize: this.config.pdfChunkSize,
+      chunkOverlap: this.config.pdfChunkOverlap,
       enableLogging: this.config.enableLogging,
     });
   }
@@ -68,7 +75,9 @@ export class TrainingDataManager {
       } catch (error) {
         if (attempt === this.config.retryAttempts) {
           this.log(
-            `Failed to process ${source} after ${attempt} attempts: ${error}`,
+            `Failed to process ${
+              source // src/services/training-data-manager.ts (continued)
+            } after ${attempt} attempts: ${error}`,
             "error"
           );
           return {
@@ -179,6 +188,7 @@ export class TrainingDataManager {
       orderDirection?: "ASC" | "DESC";
       fromDate?: Date;
       toDate?: Date;
+      fileType?: "web" | "pdf";
     } = {}
   ): Promise<TrainingDocument[]> {
     const {
@@ -188,9 +198,10 @@ export class TrainingDataManager {
       orderDirection = "DESC",
       fromDate,
       toDate,
+      fileType,
     } = options;
 
-    let query = "SELECT * FROM training_documents WHERE 1=1";
+    let query = "SELECT * FROM chatbot.training_documents WHERE 1=1";
     const params: any[] = [];
     let paramIndex = 1;
 
@@ -203,6 +214,12 @@ export class TrainingDataManager {
     if (toDate) {
       query += ` AND created_at <= $${paramIndex}`;
       params.push(toDate);
+      paramIndex++;
+    }
+
+    if (fileType) {
+      query += ` AND metadata->>'fileType' = $${paramIndex}`;
+      params.push(fileType);
       paramIndex++;
     }
 
@@ -222,7 +239,7 @@ export class TrainingDataManager {
   async deleteTrainingDocument(id: string): Promise<boolean> {
     try {
       const result = await pool.query(
-        "DELETE FROM training_documents WHERE id = $1 RETURNING id",
+        "DELETE FROM chatbot.training_documents WHERE id = $1 RETURNING id",
         [id]
       );
       return (result.rowCount ?? 0) > 0;
@@ -236,19 +253,33 @@ export class TrainingDataManager {
     totalDocuments: number;
     averageChunksPerDocument: number;
     documentsPerType: Record<string, number>;
+    totalTokens: number;
+    averageTokensPerChunk: number;
   }> {
     try {
-      const [totalResult, avgChunksResult, typesResult] = await Promise.all([
-        pool.query("SELECT COUNT(*) FROM training_documents"),
-        pool.query(
-          "SELECT AVG(array_length(chunks, 1)) FROM training_documents"
-        ),
-        pool.query(`
+      const [totalResult, avgChunksResult, typesResult, tokensResult] =
+        await Promise.all([
+          pool.query("SELECT COUNT(*) FROM chatbot.training_documents"),
+          pool.query(
+            "SELECT AVG(array_length(chunks, 1)) FROM chatbot.training_documents"
+          ),
+          pool.query(`
           SELECT metadata->>'fileType' as type, COUNT(*) 
-          FROM training_documents 
+          FROM chatbot.training_documents 
           GROUP BY metadata->>'fileType'
         `),
-      ]);
+          pool.query(`
+          SELECT 
+            SUM(array_length(chunks, 1)) as total_chunks,
+            SUM(LENGTH(content)) as total_chars
+          FROM chatbot.training_documents
+        `),
+        ]);
+
+      // Estimate tokens (rough approximation: ~4 chars per token)
+      const totalChars = parseInt(tokensResult.rows[0].total_chars) || 0;
+      const estimatedTokens = Math.floor(totalChars / 4);
+      const totalChunks = parseInt(tokensResult.rows[0].total_chunks) || 1;
 
       return {
         totalDocuments: parseInt(totalResult.rows[0].count),
@@ -256,6 +287,8 @@ export class TrainingDataManager {
         documentsPerType: Object.fromEntries(
           typesResult.rows.map((row) => [row.type, parseInt(row.count)])
         ),
+        totalTokens: estimatedTokens,
+        averageTokensPerChunk: Math.floor(estimatedTokens / totalChunks),
       };
     } catch (error) {
       this.log(`Failed to get document stats: ${error}`, "error");

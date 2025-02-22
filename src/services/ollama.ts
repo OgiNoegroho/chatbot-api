@@ -2,12 +2,36 @@
 import axios from "axios";
 import { Agent } from "http";
 
-export class OllamaService {
-  private baseUrl: string;
-  private httpAgent: Agent;
+interface OllamaConfig {
+  baseUrl?: string;
+  model?: string;
+  temperature?: number;
+  topK?: number;
+  topP?: number;
+  numThread?: number;
+  numGpu?: number;
+  timeout?: number;
+}
 
-  constructor() {
-    this.baseUrl = process.env.OLLAMA_API_URL || "http://localhost:11434";
+export class OllamaService {
+  private readonly config: Required<OllamaConfig>;
+  private readonly httpAgent: Agent;
+
+  constructor(config?: OllamaConfig) {
+    this.config = {
+      baseUrl:
+        config?.baseUrl ??
+        process.env.OLLAMA_API_URL ??
+        "http://localhost:11434",
+      model: config?.model ?? "deepseek-r1:1.5b",
+      temperature: config?.temperature ?? 0.7,
+      topK: config?.topK ?? 40,
+      topP: config?.topP ?? 0.9,
+      numThread: config?.numThread ?? 4,
+      numGpu: config?.numGpu ?? 1,
+      timeout: config?.timeout ?? 15000,
+    };
+
     this.httpAgent = new Agent({
       keepAlive: true,
       maxSockets: 100,
@@ -19,22 +43,22 @@ export class OllamaService {
   async generateResponse(prompt: string): Promise<string> {
     try {
       const response = await axios.post(
-        `${this.baseUrl}/api/generate`,
+        `${this.config.baseUrl}/api/generate`,
         {
-          model: "deepseek-r1:1.5b",
+          model: this.config.model,
           prompt,
           stream: false,
           options: {
-            num_gpu: 1,
-            num_thread: 4,
-            temperature: 0.7,
-            top_k: 40,
-            top_p: 0.9,
+            num_gpu: this.config.numGpu,
+            num_thread: this.config.numThread,
+            temperature: this.config.temperature,
+            top_k: this.config.topK,
+            top_p: this.config.topP,
           },
         },
         {
           httpAgent: this.httpAgent,
-          timeout: 15000,
+          timeout: this.config.timeout,
         }
       );
 

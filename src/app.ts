@@ -46,8 +46,8 @@ const chatService = new ChatService();
 // Chat endpoints
 app.post("/api/chat", async (req, res) => {
   try {
-    const { userId } = req.body;
-    const chatId = await chatService.createChat(userId);
+    // Removed userId parameter
+    const chatId = await chatService.createChat();
     res.json({ chatId });
   } catch (error) {
     console.error("Error creating chat:", error);
@@ -87,7 +87,7 @@ io.on("connection", (socket) => {
       } else {
         // Invalid UUID provided, we'll need to create a new one
         // This will happen when join-chat is called but client had no saved ID
-        const newChatId = await chatService.createChat("anonymous");
+        const newChatId = await chatService.createChat();
         socket.emit("chat-created", newChatId);
         socket.join(newChatId); // Join the new room
         chatId = newChatId;
@@ -118,36 +118,30 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on(
-    "accept-terms",
-    async (data: { chatId: string; userId: string }) => {
-      try {
-        console.log("Terms acceptance received:", data);
-        const { chatId, userId } = data;
+  socket.on("accept-terms", async (data: { chatId: string }) => {
+    try {
+      console.log("Terms acceptance received:", data);
+      const { chatId } = data;
 
-        // Register terms acceptance and get welcome message
-        const welcomeMessage = await chatService.acceptTermsAndConditions(
-          chatId,
-          userId
-        );
+      // Register terms acceptance and get welcome message
+      const welcomeMessage = await chatService.acceptTermsAndConditions(chatId);
 
-        // Emit terms accepted status
-        socket.emit("terms-status", { accepted: true });
+      // Emit terms accepted status
+      socket.emit("terms-status", { accepted: true });
 
-        // Send welcome message to the client
-        socket.emit("new-messages", [welcomeMessage]);
-      } catch (error) {
-        console.error("Error accepting terms:", error);
-        socket.emit("error", {
-          message: "Failed to accept terms and conditions",
-        });
-      }
+      // Send welcome message to the client
+      socket.emit("new-messages", [welcomeMessage]);
+    } catch (error) {
+      console.error("Error accepting terms:", error);
+      socket.emit("error", {
+        message: "Failed to accept terms and conditions",
+      });
     }
-  );
+  });
 
   socket.on("send-message", async (data: ChatEvent) => {
     try {
-      const { chatId, userId, content } = data;
+      const { chatId, content } = data;
 
       // Check if terms are accepted before processing messages
       const termsAccepted = await chatService.isChatTermsAccepted(chatId);
@@ -158,11 +152,7 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const messages = await chatService.processUserMessage(
-        chatId,
-        userId,
-        content
-      );
+      const messages = await chatService.processUserMessage(chatId, content);
 
       io.to(chatId).emit("new-messages", messages);
     } catch (error) {

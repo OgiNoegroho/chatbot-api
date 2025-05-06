@@ -62,29 +62,24 @@ export class ChatService {
 
       await client.query(`
         CREATE SCHEMA IF NOT EXISTS chatbot;
-        
-        CREATE TABLE IF NOT EXISTS chatbot.chats (
-          id UUID PRIMARY KEY,
-          user_id UUID NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          metadata JSONB DEFAULT '{}'::jsonb,
-          terms_accepted BOOLEAN DEFAULT FALSE
-        );
 
-        CREATE TABLE IF NOT EXISTS chatbot.messages (
-          id UUID PRIMARY KEY,
-          chat_id UUID REFERENCES chatbot.chats(id) ON DELETE CASCADE,
-          user_id UUID NOT NULL,
-          content TEXT NOT NULL,
-          role VARCHAR(10) NOT NULL,
-          timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          metadata JSONB DEFAULT '{}'::jsonb
-        );
+CREATE TABLE IF NOT EXISTS chatbot.chats (
+  id UUID PRIMARY KEY,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  terms_accepted BOOLEAN DEFAULT FALSE
+);
 
-        CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON chatbot.messages(chat_id);
-        CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp);
-      `);
+CREATE TABLE IF NOT EXISTS chatbot.messages (
+  id UUID PRIMARY KEY,
+  chat_id UUID REFERENCES chatbot.chats(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  role VARCHAR(10) NOT NULL CHECK (role IN ('user', 'assistant')),
+  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON chatbot.messages(chat_id);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp);`);
 
       await client.query("COMMIT");
     } catch (error) {
@@ -107,6 +102,23 @@ export class ChatService {
       : content;
   }
 
+  // New method to remove markdown formatting
+  private removeMarkdownFormatting(content: string): string {
+    // Remove bold formatting (double asterisks)
+    let cleanedContent = content.replace(/\*\*(.*?)\*\*/g, "$1");
+
+    // Remove italic formatting (single asterisks)
+    cleanedContent = cleanedContent.replace(/\*(.*?)\*/g, "$1");
+
+    // Remove heading formatting (# symbols)
+    cleanedContent = cleanedContent.replace(/^#+\s+(.*)$/gm, "$1");
+
+    // Remove bullet points formatting
+    cleanedContent = cleanedContent.replace(/^\s*\*\s+(.*)$/gm, "- $1");
+
+    return cleanedContent;
+  }
+
   async getChatHistory(chatId: string): Promise<Message[]> {
     if (!this.isValidUUID(chatId)) return [];
 
@@ -125,21 +137,14 @@ export class ChatService {
 
   async saveMessage(
     chatId: string,
-    message: Omit<Message, "id">
+    message: Omit<Message, "id" | "userId">
   ): Promise<Message> {
     const messageId = uuidv4();
     const truncatedContent = this.truncateMessage(message.content);
 
     const result = await this.pool.query(
-      "INSERT INTO chatbot.messages (id, chat_id, user_id, content, role, timestamp) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
-      [
-        messageId,
-        chatId,
-        message.userId,
-        truncatedContent,
-        message.role,
-        message.timestamp,
-      ]
+      "INSERT INTO chatbot.messages (id, chat_id, content, role, timestamp) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [messageId, chatId, truncatedContent, message.role, message.timestamp]
     );
 
     this.messageCache.del(chatId);
@@ -148,10 +153,9 @@ export class ChatService {
 
   async processUserMessage(
     chatId: string,
-    userId: string,
     content: string
   ): Promise<Message[]> {
-    const validChatId = await this.ensureValidChatId(chatId, userId);
+    const validChatId = await this.ensureValidChatId(chatId);
     const history = await this.getChatHistory(validChatId);
 
     const formattedHistory = history.map((msg) => ({
@@ -160,7 +164,6 @@ export class ChatService {
     }));
 
     const userMessage = await this.saveMessage(validChatId, {
-      userId,
       content: this.truncateMessage(content),
       timestamp: new Date(),
       role: "user",
@@ -177,9 +180,11 @@ export class ChatService {
         ),
       ]);
 
+      // Clean the AI response by removing markdown formatting before saving
+      const cleanedResponse = this.removeMarkdownFormatting(aiResponse);
+
       const assistantMessage = await this.saveMessage(validChatId, {
-        userId,
-        content: this.truncateMessage(aiResponse),
+        content: this.truncateMessage(cleanedResponse),
         timestamp: new Date(),
         role: "assistant",
         chatId: validChatId,
@@ -192,10 +197,7 @@ export class ChatService {
     }
   }
 
-  private async ensureValidChatId(
-    chatId: string,
-    userId: string
-  ): Promise<string> {
+  private async ensureValidChatId(chatId: string): Promise<string> {
     // First check if it's a valid UUID
     if (this.isValidUUID(chatId)) {
       // Query the database to see if this chat exists
@@ -211,21 +213,21 @@ export class ChatService {
 
       // If it's a valid UUID but doesn't exist in DB yet, create it with this ID
       await this.pool.query(
-        "INSERT INTO chatbot.chats (id, user_id, created_at, updated_at) VALUES ($1, $2, NOW(), NOW())",
-        [chatId, userId]
+        "INSERT INTO chatbot.chats (id, created_at, updated_at) VALUES ($1, NOW(), NOW())",
+        [chatId]
       );
       return chatId;
     }
 
     // If not a valid UUID, create a new chat
-    return await this.createChat(userId);
+    return await this.createChat();
   }
 
-  async createChat(userId: string): Promise<string> {
+  async createChat(): Promise<string> {
     const chatId = uuidv4();
     await this.pool.query(
-      "INSERT INTO chatbot.chats (id, user_id, created_at, updated_at, terms_accepted) VALUES ($1, $2, NOW(), NOW(), FALSE)",
-      [chatId, userId]
+      "INSERT INTO chatbot.chats (id, created_at, updated_at, terms_accepted) VALUES ($1, NOW(), NOW(), FALSE)",
+      [chatId]
     );
     return chatId;
   }
@@ -241,11 +243,8 @@ export class ChatService {
     return result.rows.length > 0;
   }
 
-  async acceptTermsAndConditions(
-    chatId: string,
-    userId: string
-  ): Promise<Message> {
-    const validChatId = await this.ensureValidChatId(chatId, userId);
+  async acceptTermsAndConditions(chatId: string): Promise<Message> {
+    const validChatId = await this.ensureValidChatId(chatId);
 
     // Update the chat to mark terms as accepted
     await this.pool.query(
@@ -257,10 +256,13 @@ export class ChatService {
       // Get welcome message from Gemini
       const welcomeContent = await this.geminiService.generateWelcomeMessage();
 
+      // Clean the welcome message by removing markdown formatting
+      const cleanedWelcomeContent =
+        this.removeMarkdownFormatting(welcomeContent);
+
       // Send welcome message from assistant
       const welcomeMessage = await this.saveMessage(validChatId, {
-        userId,
-        content: this.truncateMessage(welcomeContent),
+        content: this.truncateMessage(cleanedWelcomeContent),
         timestamp: new Date(),
         role: "assistant",
         chatId: validChatId,
@@ -274,7 +276,6 @@ export class ChatService {
         "Terima kasih telah menyetujui persyaratan kami. Ada yang bisa saya bantu?";
 
       const welcomeMessage = await this.saveMessage(validChatId, {
-        userId,
         content: fallbackMessage,
         timestamp: new Date(),
         role: "assistant",

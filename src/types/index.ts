@@ -1,19 +1,13 @@
 // src/types/index.ts
-export interface ChatHistory {
-  role: string;
-  content: string;
-}
-
-export interface Message extends ChatHistory {
+export interface Message {
   id: string;
-  userId: string;
   chatId: string;
+  content: string;
+  role: "user" | "assistant";
   timestamp: Date;
-  metadata?: Record<string, any>;
 }
 
 export interface ChatEvent {
   chatId: string;
-  userId: string;
   content: string;
 }

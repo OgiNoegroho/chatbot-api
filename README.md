@@ -1,10 +1,10 @@
 # Chatbot API
 
-This is a Node.js and Express-based chatbot API that utilizes Socket.io for real-time communication and DeepSeek via Ollama for AI-powered responses. The API also integrates PostgreSQL for chat history storage and caching for performance optimization.
+This is a Node.js and Express-based chatbot API that utilizes Socket.io for real-time communication and Gemini AI for AI-powered responses. The API also integrates PostgreSQL for chat history storage and caching for performance optimization.
 
 ## Features
 - Real-time chat with WebSocket support
-- AI-powered responses using DeepSeek on Ollama
+- AI-powered responses using Gemini AI
 - PostgreSQL database for chat history storage
 - Caching with NodeCache to improve response times
 - Performance monitoring and health metrics
@@ -14,7 +14,6 @@ This is a Node.js and Express-based chatbot API that utilizes Socket.io for real
 ### Prerequisites
 - Node.js (v16 or later)
 - PostgreSQL
-- Docker (optional for running PostgreSQL locally)
 
 ### Setup
 1. Clone the repository:
@@ -51,44 +50,15 @@ This is a Node.js and Express-based chatbot API that utilizes Socket.io for real
    npm run dev
    ```
 
-## API Endpoints
-
-### Health & Monitoring
-- `GET /health` - Returns basic health metrics.
-- `GET /metrics` - Provides detailed performance metrics.
-
 ### WebSocket Events
 
 #### Client -> Server
 - `join-chat` (chatId: string) - Joins a chat and fetches history.
-- `send-message` ({ chatId: string, userId: string, content: string }) - Sends a new message.
+- `send-message` ({ chatId: string, content: string }) - Sends a new message.
 
 #### Server -> Client
 - `chat-history` (messages: Message[]) - Returns chat history.
 - `new-messages` (messages: Message[]) - Sends new messages.
 - `error` ({ message: string }) - Sends an error message.
 
-## Deployment
-
-To deploy the chatbot API, use a process manager like PM2 or Docker:
-
-### Using PM2
-```sh
-pm install -g pm2
-pm run build
-pm2 start dist/app.js --name chatbot-api
-```
-
-### Using Docker
-1. Build the Docker image:
-   ```sh
-   docker build -t chatbot-api .
-   ```
-2. Run the container:
-   ```sh
-   docker run -d -p 3000:3000 --env-file .env chatbot-api
-   ```
-
-## License
-This project is licensed under the MIT License.
 

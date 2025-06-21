@@ -18,15 +18,21 @@ export class ChatService {
   private readonly MAX_PDF_CHUNKS = 2; // Reduced from 3 to improve performance
 
   constructor() {
+    // Configure connection for Supabase PostgreSQL
     this.pool = new Pool({
-      user: process.env.DB_USER,
-      host: process.env.DB_HOST,
-      database: process.env.DB_NAME,
-      password: process.env.DB_PASSWORD,
-      port: parseInt(process.env.DB_PORT || "5432"),
+      user: process.env.SUPABASE_DB_USER || process.env.DB_USER,
+      host: process.env.SUPABASE_DB_HOST || process.env.DB_HOST,
+      database: process.env.SUPABASE_DB_NAME || process.env.DB_NAME,
+      password: process.env.SUPABASE_DB_PASSWORD || process.env.DB_PASSWORD,
+      port: parseInt(
+        process.env.SUPABASE_DB_PORT || process.env.DB_PORT || "5432"
+      ),
       max: parseInt(process.env.DB_POOL_SIZE || "20"),
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
+      ssl: {
+        rejectUnauthorized: false, // Required for Supabase SSL connections
+      },
     });
 
     this.messageCache = new NodeCache({
@@ -53,20 +59,43 @@ export class ChatService {
       console.error("Unexpected error on idle client", err);
       this.reconnectDatabase();
     });
+
+    // Test Supabase connection on startup
+    this.testSupabaseConnection();
+  }
+
+  /**
+   * Test Supabase database connection
+   */
+  private async testSupabaseConnection(): Promise<void> {
+    try {
+      const client = await this.pool.connect();
+      await client.query("SELECT NOW()");
+      client.release();
+      console.log("✅ Supabase database connection successful");
+    } catch (error) {
+      console.error("❌ Supabase database connection failed:", error);
+    }
   }
 
   private async reconnectDatabase() {
     try {
       await this.pool.end();
       this.pool = new Pool({
-        user: process.env.DB_USER,
-        host: process.env.DB_HOST,
-        database: process.env.DB_NAME,
-        password: process.env.DB_PASSWORD,
-        port: parseInt(process.env.DB_PORT || "5432"),
+        user: process.env.SUPABASE_DB_USER || process.env.DB_USER,
+        host: process.env.SUPABASE_DB_HOST || process.env.DB_HOST,
+        database: process.env.SUPABASE_DB_NAME || process.env.DB_NAME,
+        password: process.env.SUPABASE_DB_PASSWORD || process.env.DB_PASSWORD,
+        port: parseInt(
+          process.env.SUPABASE_DB_PORT || process.env.DB_PORT || "5432"
+        ),
+        ssl: {
+          rejectUnauthorized: false, // Required for Supabase SSL connections
+        },
       });
+      console.log("✅ Reconnected to Supabase database successfully");
     } catch (error) {
-      console.error("Failed to reconnect to database:", error);
+      console.error("❌ Failed to reconnect to Supabase database:", error);
     }
   }
 
@@ -110,29 +139,147 @@ export class ChatService {
     try {
       await client.query("BEGIN");
 
+      console.log("🔧 Initializing Supabase database tables...");
+
+      // Create schema
+      await client.query(`CREATE SCHEMA IF NOT EXISTS chatbot;`);
+
+      // Enable pgvector extension for Supabase (if available)
+      try {
+        await client.query(`CREATE EXTENSION IF NOT EXISTS vector;`);
+        console.log("✅ pgvector extension enabled");
+      } catch (error) {
+        console.log(
+          "⚠️ pgvector extension not available, continuing without vector support"
+        );
+      }
+
+      // Create chats table
       await client.query(`
-        CREATE SCHEMA IF NOT EXISTS chatbot;
+        CREATE TABLE IF NOT EXISTS chatbot.chats (
+          id UUID PRIMARY KEY,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
 
-CREATE TABLE IF NOT EXISTS chatbot.chats (
-  id UUID PRIMARY KEY,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+      // Create messages table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS chatbot.messages (
+          id UUID PRIMARY KEY,
+          chat_id UUID REFERENCES chatbot.chats(id) ON DELETE CASCADE,
+          content TEXT NOT NULL,
+          role VARCHAR(10) NOT NULL CHECK (role IN ('user', 'assistant')),
+          timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
 
-CREATE TABLE IF NOT EXISTS chatbot.messages (
-  id UUID PRIMARY KEY,
-  chat_id UUID REFERENCES chatbot.chats(id) ON DELETE CASCADE,
-  content TEXT NOT NULL,
-  role VARCHAR(10) NOT NULL CHECK (role IN ('user', 'assistant')),
-  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+      // Create PDF documents table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS chatbot.pdf_documents (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          original_name VARCHAR(255) NOT NULL,
+          file_name VARCHAR(255) NOT NULL,
+          file_path TEXT NOT NULL,
+          file_size BIGINT NOT NULL,
+          page_count INTEGER,
+          content_hash VARCHAR(64),
+          upload_status VARCHAR(20) DEFAULT 'completed' CHECK (upload_status IN ('processing', 'completed', 'failed')),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
 
-CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON chatbot.messages(chat_id);
-CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp);`);
+      // Create PDF chunks table
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS chatbot.pdf_chunks (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          document_id UUID REFERENCES chatbot.pdf_documents(id) ON DELETE CASCADE,
+          chunk_index INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          content_length INTEGER NOT NULL,
+          page_number INTEGER,
+          section_title VARCHAR(255),
+          chunk_type VARCHAR(50) DEFAULT 'text',
+          metadata JSONB,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
 
       await client.query("COMMIT");
+
+      // Create vector embeddings table with pgvector (in separate transaction)
+      await client.query("BEGIN");
+      try {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS chatbot.vector_embeddings (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            chunk_id UUID REFERENCES chatbot.pdf_chunks(id) ON DELETE CASCADE,
+            document_id UUID REFERENCES chatbot.pdf_documents(id) ON DELETE CASCADE,
+            embedding_model VARCHAR(100) NOT NULL DEFAULT 'embedding-001',
+            embedding_vector vector(768),
+            vector_dimension INTEGER NOT NULL DEFAULT 768,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+        console.log("✅ Vector embeddings table created with pgvector support");
+        await client.query("COMMIT");
+      } catch (vectorError) {
+        await client.query("ROLLBACK");
+        console.log(
+          "⚠️ Creating vector embeddings table without vector type (pgvector not available)"
+        );
+        await client.query("BEGIN");
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS chatbot.vector_embeddings (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            chunk_id UUID REFERENCES chatbot.pdf_chunks(id) ON DELETE CASCADE,
+            document_id UUID REFERENCES chatbot.pdf_documents(id) ON DELETE CASCADE,
+            embedding_model VARCHAR(100) NOT NULL DEFAULT 'embedding-001',
+            embedding_vector TEXT,
+            vector_dimension INTEGER NOT NULL DEFAULT 768,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+        await client.query("COMMIT");
+      }
+
+      // Create indexes in separate transaction
+      await client.query("BEGIN");
+      try {
+        // Create basic indexes
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON chatbot.messages(chat_id);
+          CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp);
+          CREATE INDEX IF NOT EXISTS idx_pdf_chunks_document_id ON chatbot.pdf_chunks(document_id);
+          CREATE INDEX IF NOT EXISTS idx_vector_embeddings_chunk_id ON chatbot.vector_embeddings(chunk_id);
+          CREATE INDEX IF NOT EXISTS idx_vector_embeddings_document_id ON chatbot.vector_embeddings(document_id);
+        `);
+
+        // Create vector similarity index using HNSW (conditional)
+        try {
+          await client.query(`
+            CREATE INDEX IF NOT EXISTS idx_vector_embeddings_hnsw
+            ON chatbot.vector_embeddings USING hnsw (embedding_vector vector_cosine_ops);
+          `);
+          console.log("✅ Vector similarity index created");
+        } catch (indexError) {
+          console.log(
+            "⚠️ Vector similarity index not created (pgvector not available)"
+          );
+        }
+
+        await client.query("COMMIT");
+        console.log("✅ Supabase database tables initialized successfully");
+      } catch (indexError) {
+        await client.query("ROLLBACK");
+        console.error("❌ Error creating indexes:", indexError);
+        // Continue without indexes
+        console.log("⚠️ Continuing without some indexes");
+      }
     } catch (error) {
       await client.query("ROLLBACK");
+      console.error("❌ Error initializing Supabase database tables:", error);
       throw error;
     } finally {
       client.release();
@@ -198,20 +345,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp)
    */
   async uploadPDF(tempFilePath: string, originalName: string): Promise<string> {
     try {
-      // Upload the PDF using the PDF service
+      // Upload the PDF using the PDF service (this will save to database and generate vectors)
       const documentId = await this.pdfService.uploadPDF(
         tempFilePath,
         originalName
       );
 
-      // Get the chunks from the PDF
-      const chunks = this.pdfService.getDocumentChunks(documentId);
-
-      // Add the chunks to the vector store
-      await this.vectorStore.addChunks(chunks);
-
       console.log(
-        `PDF ${originalName} uploaded with ID ${documentId} and ${chunks.length} chunks indexed`
+        `PDF ${originalName} uploaded with ID ${documentId} and saved to Supabase database`
       );
 
       return documentId;
@@ -229,14 +370,43 @@ CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp)
   }
 
   /**
+   * Get document names by IDs
+   */
+  private async getDocumentNames(
+    documentIds: string[]
+  ): Promise<Record<string, string>> {
+    try {
+      const allDocuments = this.pdfService.getAllDocuments();
+      const documentNames: Record<string, string> = {};
+
+      for (const docId of documentIds) {
+        const doc = allDocuments.find((d: any) => d.id === docId);
+        if (doc) {
+          documentNames[docId] = doc.name;
+        }
+      }
+
+      return documentNames;
+    } catch (error) {
+      console.error("Error getting document names:", error);
+      return {};
+    }
+  }
+
+  /**
    * Delete a PDF document
    */
-  deletePDFDocument(documentId: string): boolean {
-    // Delete from vector store first
-    this.vectorStore.deleteEntriesForDocument(documentId);
+  async deletePDFDocument(documentId: string): Promise<boolean> {
+    try {
+      // Delete from vector store first
+      this.vectorStore.deleteEntriesForDocument(documentId);
 
-    // Then delete from PDF service
-    return this.pdfService.deleteDocument(documentId);
+      // Then delete from PDF service
+      return this.pdfService.deleteDocument(documentId);
+    } catch (error) {
+      console.error("Error deleting PDF document:", error);
+      return false;
+    }
   }
 
   /**
@@ -261,7 +431,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp)
 
       // Log all search results for debugging
       console.log(`Vector search returned ${searchResults.length} results`);
-      searchResults.forEach((result, index) => {
+      searchResults.forEach((result: any, index: number) => {
         console.log(
           `  Result ${index + 1}: Score: ${result.score.toFixed(
             4
@@ -273,45 +443,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp)
 
       // Filter results by similarity threshold
       const relevantResults = searchResults.filter(
-        (result) => result.score >= SIMILARITY_THRESHOLD
+        (result: any) => result.score >= SIMILARITY_THRESHOLD
       );
 
       if (relevantResults.length === 0) {
         console.log(`No relevant PDF content found for query: "${query}"`);
-
-        // Always try fallback to text search when vector search doesn't find enough results
-        console.log("Attempting fallback to text search...");
-        const textSearchResults = this.pdfService.searchInDocuments(query);
-
-        if (textSearchResults.chunks.length > 0) {
-          console.log(
-            `Text search found ${textSearchResults.chunks.length} relevant chunks`
-          );
-
-          // Get document names for attribution
-          const documentNames: Record<string, string> = {};
-          for (const docId of textSearchResults.documentIds) {
-            const doc = this.pdfService.getDocument(docId);
-            if (doc) {
-              documentNames[docId] = doc.name;
-            }
-          }
-
-          // Limit to MAX_PDF_CHUNKS
-          const limitedChunks = textSearchResults.chunks.slice(
-            0,
-            this.MAX_PDF_CHUNKS
-          );
-
-          return {
-            chunks: limitedChunks.map((chunk) => ({
-              content: chunk.content,
-              documentId: chunk.documentId,
-            })),
-            documentNames,
-          };
-        }
-
         return null;
       }
 
@@ -320,24 +456,21 @@ CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp)
       );
 
       // Get document names for attribution
-      const documentIds = [
-        ...new Set(relevantResults.map((result) => result.chunk.documentId)),
+      const documentIds: string[] = [
+        ...new Set(
+          relevantResults.map(
+            (result: any) => result.chunk.documentId as string
+          )
+        ),
       ];
-      const documentNames: Record<string, string> = {};
-
-      for (const docId of documentIds) {
-        const doc = this.pdfService.getDocument(docId);
-        if (doc) {
-          documentNames[docId] = doc.name;
-        }
-      }
+      const documentNames = await this.getDocumentNames(documentIds);
 
       // Sort by relevance score (highest first)
-      relevantResults.sort((a, b) => b.score - a.score);
+      relevantResults.sort((a: any, b: any) => b.score - a.score);
 
       // Log the selected chunks
       console.log("Selected PDF chunks for context:");
-      relevantResults.forEach((result, index) => {
+      relevantResults.forEach((result: any, index: number) => {
         console.log(
           `  Chunk ${index + 1}: Score: ${result.score.toFixed(4)}, Document: ${
             documentNames[result.chunk.documentId] || "Unknown"
@@ -346,7 +479,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON chatbot.messages(timestamp)
       });
 
       return {
-        chunks: relevantResults.map((result) => ({
+        chunks: relevantResults.map((result: any) => ({
           content: result.chunk.content,
           documentId: result.chunk.documentId,
         })),

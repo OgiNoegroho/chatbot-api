@@ -17,7 +17,7 @@ This is a Node.js and Express-based chatbot API that utilizes Socket.io for real
 ### Prerequisites
 
 - Node.js (v16 or later)
-- PostgreSQL
+- PostgreSQL (local) OR Supabase account (recommended)
 
 ### Setup
 
@@ -34,11 +34,35 @@ This is a Node.js and Express-based chatbot API that utilizes Socket.io for real
    npm install
    ```
 
-3. Create a `.env` file in the root directory and configure the following environment variables:
+3. Create a `.env` file in the root directory and configure environment variables:
+
+   **Option A: Supabase (Recommended)**
 
    ```env
    PORT=3000
-   FRONTEND_URL=http://localhost:5173
+   FRONTEND_URL=http://localhost:3001
+
+   # Supabase Configuration
+   SUPABASE_URL=https://your-project-ref.supabase.co
+   SUPABASE_ANON_KEY=your-anon-key
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+   # Supabase Database
+   SUPABASE_DB_HOST=db.your-project-ref.supabase.co
+   SUPABASE_DB_PORT=5432
+   SUPABASE_DB_NAME=postgres
+   SUPABASE_DB_USER=postgres
+   SUPABASE_DB_PASSWORD=your-database-password
+
+   DB_POOL_SIZE=20
+   GEMINI_API_KEY=your_gemini_api_key
+   ```
+
+   **Option B: Local PostgreSQL**
+
+   ```env
+   PORT=3000
+   FRONTEND_URL=http://localhost:3001
    DB_USER=your_db_user
    DB_PASSWORD=your_db_password
    DB_HOST=localhost
@@ -48,16 +72,50 @@ This is a Node.js and Express-based chatbot API that utilizes Socket.io for real
    GEMINI_API_KEY=your_gemini_api_key
    ```
 
-4. Set up the PostgreSQL database:
+4. Set up the database:
+
+   **For Supabase**: Tables will be created automatically on first run.
+
+   **For Local PostgreSQL**:
 
    ```sh
    psql -U your_db_user -d chatbot -f schema.sql
    ```
 
-5. Start the server:
+5. Test the database connection (optional):
+
+   ```sh
+   node scripts/test-supabase-connection.js
+   ```
+
+6. Start the server:
    ```sh
    npm run dev
    ```
+
+### Supabase Setup Guide
+
+1. **Create a Supabase Project**:
+
+   - Go to [supabase.com](https://supabase.com)
+   - Create a new project
+   - Wait for the project to be ready
+
+2. **Get Your Credentials**:
+
+   - **Project URL**: Settings > API
+   - **Anon Key**: Settings > API
+   - **Service Role Key**: Settings > API (keep secret!)
+   - **Database Password**: Settings > Database
+
+3. **Enable Extensions** (optional):
+
+   - Go to Database > Extensions
+   - Enable `vector` for pgvector support
+
+4. **Update Environment Variables**:
+   - Copy credentials to your `.env` file
+   - See `.env.supabase.example` for reference
 
 ### WebSocket Events
 

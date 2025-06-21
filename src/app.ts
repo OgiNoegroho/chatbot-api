@@ -137,7 +137,7 @@ app.get("/api/pdf/list", (_req, res) => {
     const documents = chatService.getAllPDFDocuments();
 
     // Return only the necessary information
-    const documentList = documents.map((doc) => ({
+    const documentList = documents.map((doc: any) => ({
       id: doc.id,
       name: doc.name,
       pageCount: doc.metadata.pageCount,
@@ -156,7 +156,7 @@ app.get("/api/pdf/list", (_req, res) => {
 app.delete("/api/pdf/:documentId", async (req, res) => {
   try {
     const { documentId } = req.params;
-    const success = chatService.deletePDFDocument(documentId);
+    const success = await chatService.deletePDFDocument(documentId);
 
     if (success) {
       res.json({ success: true });

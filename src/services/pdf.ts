@@ -3,6 +3,7 @@ import * as path from "path";
 import pdfParse from "pdf-parse";
 import { v4 as uuidv4 } from "uuid";
 import NodeCache from "node-cache";
+import { VectorStorePgVectorService } from "./vector-store-pgvector";
 
 export interface PDFDocument {
   id: string;
@@ -33,11 +34,13 @@ export class PDFService {
   private pdfCache: NodeCache;
   private pdfStoragePath: string;
   private documents: Map<string, PDFDocument>;
+  private vectorStorePgVector?: VectorStorePgVectorService;
 
-  constructor() {
+  constructor(vectorStorePgVector?: VectorStorePgVectorService) {
     this.pdfCache = new NodeCache({ stdTTL: 3600, checkperiod: 600 });
     this.pdfStoragePath = path.join(process.cwd(), "uploads", "pdfs");
     this.documents = new Map<string, PDFDocument>();
+    this.vectorStorePgVector = vectorStorePgVector;
 
     // Ensure the upload directory exists
     if (!fs.existsSync(this.pdfStoragePath)) {
@@ -117,6 +120,25 @@ export class PDFService {
       console.log(
         `Processed PDF ${document.name} with ${chunks.length} chunks`
       );
+
+      // --- Integration with VectorStorePgVectorService ---
+      if (this.vectorStorePgVector) {
+        try {
+          await this.vectorStorePgVector.savePDFDocument(
+            documentId,
+            document.name,
+            path.basename(filePath),
+            filePath,
+            document.metadata.fileSize,
+            document.metadata.pageCount
+          );
+          await this.vectorStorePgVector.addChunks(chunks);
+          console.log(`PDF and chunks saved to Supabase/pgvector`);
+        } catch (err) {
+          console.error(`Error saving PDF/chunks to Supabase:`, err);
+        }
+      }
+      // --- End integration ---
 
       return documentId;
     } catch (error) {

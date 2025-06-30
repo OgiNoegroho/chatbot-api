@@ -134,6 +134,16 @@ export class PDFService {
           );
           await this.vectorStorePgVector.addChunks(chunks);
           console.log(`PDF and chunks saved to Supabase/pgvector`);
+
+          // Delete local PDF file after successful upload to Supabase
+          try {
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+              console.log(`Deleted local PDF file: ${filePath}`);
+            }
+          } catch (deleteErr) {
+            console.error(`Error deleting local PDF file:`, deleteErr);
+          }
         } catch (err) {
           console.error(`Error saving PDF/chunks to Supabase:`, err);
         }

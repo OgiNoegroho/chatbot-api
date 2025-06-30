@@ -2,7 +2,7 @@ import { Pool } from "pg";
 import { v4 as uuidv4 } from "uuid";
 import { GeminiService } from "./gemini";
 import { PDFService } from "./pdf";
-import { VectorStoreService } from "./vector-store";
+import { VectorStorePgVectorService } from "./vector-store-pgvector";
 import NodeCache from "node-cache";
 import { Message } from "../types";
 
@@ -10,7 +10,7 @@ export class ChatService {
   private pool: Pool;
   private geminiService: GeminiService;
   private pdfService: PDFService;
-  private vectorStore: VectorStoreService;
+  private vectorStore: VectorStorePgVectorService;
   private messageCache: NodeCache;
   private readonly CACHE_TTL = 3600;
   private readonly MAX_MESSAGE_LENGTH = 4096;
@@ -43,8 +43,8 @@ export class ChatService {
     });
 
     this.geminiService = new GeminiService();
-    this.pdfService = new PDFService();
-    this.vectorStore = new VectorStoreService();
+    this.vectorStore = new VectorStorePgVectorService(this.pool);
+    this.pdfService = new PDFService(this.vectorStore);
     this.initializeTables();
 
     // Index existing PDFs into vector store after services are initialized
@@ -399,7 +399,7 @@ export class ChatService {
   async deletePDFDocument(documentId: string): Promise<boolean> {
     try {
       // Delete from vector store first
-      this.vectorStore.deleteEntriesForDocument(documentId);
+      await this.vectorStore.deleteEntriesForDocument(documentId);
 
       // Then delete from PDF service
       return this.pdfService.deleteDocument(documentId);

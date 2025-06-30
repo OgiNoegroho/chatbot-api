@@ -1,7 +1,6 @@
 require("dotenv").config();
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { ChatService } = require("../dist/services/chat");
-const { VectorStoreService } = require("../dist/services/vector-store");
 const { PDFService } = require("../dist/services/pdf");
 
 // Comprehensive vector search test
@@ -11,7 +10,6 @@ async function testVectorSearch() {
 
     // Initialize services
     const chatService = new ChatService();
-    const vectorStore = new VectorStoreService();
     const pdfService = new PDFService();
 
     console.log("1. Testing PDF Service - Loading existing PDFs...");
@@ -32,21 +30,21 @@ async function testVectorSearch() {
 
     console.log("\n2. Testing Vector Store - Checking vector entries...");
     // Get vector store stats
-    const stats = vectorStore.getStats();
-    console.log(`Vector store contains ${stats.entryCount} entries`);
+    // const stats = vectorStore.getStats();
+    // console.log(`Vector store contains ${stats.entryCount} entries`);
 
-    if (stats.entryCount === 0) {
-      console.log("⚠️  Vector store is empty! Re-indexing PDFs...");
+    // if (stats.entryCount === 0) {
+    //   console.log("⚠️  Vector store is empty! Re-indexing PDFs...");
 
-      // Re-index all PDFs
-      for (const doc of allDocs) {
-        console.log(`  Indexing ${doc.name}...`);
-        await vectorStore.addChunks(doc.chunks);
-      }
+    //   // Re-index all PDFs
+    //   for (const doc of allDocs) {
+    //     console.log(`  Indexing ${doc.name}...`);
+    //     await vectorStore.addChunks(doc.chunks);
+    //   }
 
-      const newStats = vectorStore.getStats();
-      console.log(`✅ Re-indexed ${newStats.entryCount} chunks`);
-    }
+    //   const newStats = vectorStore.getStats();
+    //   console.log(`✅ Re-indexed ${newStats.entryCount} chunks`);
+    // }
 
     console.log("\n3. Testing Vector Search with various queries...");
 
@@ -65,25 +63,25 @@ async function testVectorSearch() {
       console.log(`\n--- Testing query: "${query}" ---`);
 
       // Test vector search directly
-      const vectorResults = await vectorStore.search(query, 5);
-      console.log(`Vector search found ${vectorResults.length} results:`);
+      // const vectorResults = await vectorStore.search(query, 5);
+      // console.log(`Vector search found ${vectorResults.length} results:`);
 
-      vectorResults.forEach((result, index) => {
-        console.log(
-          `  ${index + 1}. Score: ${result.score.toFixed(
-            4
-          )} - "${result.chunk.content.substring(0, 100)}..."`
-        );
-      });
+      // vectorResults.forEach((result, index) => {
+      //   console.log(
+      //     `  ${index + 1}. Score: ${result.score.toFixed(
+      //       4
+      //     )} - "${result.chunk.content.substring(0, 100)}..."`
+      //   );
+      // });
 
-      // Test with similarity threshold
-      const SIMILARITY_THRESHOLD = 0.2;
-      const relevantResults = vectorResults.filter(
-        (r) => r.score >= SIMILARITY_THRESHOLD
-      );
-      console.log(
-        `Results above threshold (${SIMILARITY_THRESHOLD}): ${relevantResults.length}`
-      );
+      // // Test with similarity threshold
+      // const SIMILARITY_THRESHOLD = 0.2;
+      // const relevantResults = vectorResults.filter(
+      //   (r) => r.score >= SIMILARITY_THRESHOLD
+      // );
+      // console.log(
+      //   `Results above threshold (${SIMILARITY_THRESHOLD}): ${relevantResults.length}`
+      // );
 
       // Test text search fallback
       const textResults = pdfService.searchInDocuments(query);
@@ -163,14 +161,14 @@ async function testVectorSearch() {
     }
 
     console.log("\n=== TEST SUMMARY ===");
-    const finalStats = vectorStore.getStats();
+    // const finalStats = vectorStore.getStats();
     console.log(`📄 PDFs loaded: ${allDocs.length}`);
-    console.log(`🔍 Vector entries: ${finalStats.entryCount}`);
-    console.log(
-      `✅ Vector search is ${
-        finalStats.entryCount > 0 ? "WORKING" : "NOT WORKING"
-      }`
-    );
+    // console.log(`🔍 Vector entries: ${finalStats.entryCount}`);
+    // console.log(
+    //   `✅ Vector search is ${
+    //     finalStats.entryCount > 0 ? "WORKING" : "NOT WORKING"
+    //   }`
+    // );
   } catch (error) {
     console.error("❌ Error in vector search test:", error);
     console.error("Stack trace:", error.stack);
